@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pipefix-env"
+version = "1.0.0"
+description = "PipeFix — OpenEnv data pipeline debugging environment"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.11,<3.15"
+authors = [{ name = "PipeFix contributors" }]
+keywords = ["openenv", "rl", "agents", "data-pipeline", "debugging"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Science/Research",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+]
+dependencies = [
+  "fastapi==0.115.12",
+  "uvicorn==0.34.0",
+  "pydantic==2.11.3",
+  "openai>=2.7.2",
+  "httpx==0.28.1",
+  "openenv-core>=0.2.0",
+]
+
+[project.scripts]
+server = "server.app:main"
+
+[project.optional-dependencies]
+dev = []
+
+[project.urls]
+Homepage = "https://github.com/srijana28/pipefix-env"
+Repository = "https://github.com/srijana28/pipefix-env"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["env*", "server*"]

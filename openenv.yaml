@@ -1,0 +1,26 @@
+name: pipefix
+version: 1.0.0
+description: Logs-first data pipeline debugging environment with cascading deterministic failures.
+entrypoint:
+  module: env.environment
+  class: PipeFixEnv
+api:
+  reset: /reset
+  step: /step
+  state: /state
+tasks:
+  - name: easy_single_failure
+    difficulty: easy
+    objective: Fix transformation date format and run pipeline successfully.
+  - name: medium_multi_issue
+    difficulty: medium
+    objective: Fix missing values, deduplicate rows, and repair schema.
+  - name: hard_cascading_failures
+    difficulty: hard
+    objective: Resolve cascading failures in correct order and produce correct output. Multiple dataset instances available via reset(seed).
+metadata:
+  domain: data_engineering
+  tags:
+    - openenv
+    - debugging
+    - data-pipeline
