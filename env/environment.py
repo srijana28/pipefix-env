@@ -54,11 +54,12 @@ class PipeFixEnv:
     def step(self, action: Action) -> StepResult:
         if self._state is None:
             raise RuntimeError("Environment not initialized")
+
         state = self._state
+
         if state.done:
-            obs = self._to_observation()
             return StepResult(
-                observation=obs,
+                observation=self._to_observation(),
                 reward=Reward(value=0.0, components={"episode_done": 0.0}),
                 done=True,
                 info=StepInfo(task_name=state.task_name, last_action_error=None, raw_reward=0.0, score=self._score()),
@@ -69,12 +70,14 @@ class PipeFixEnv:
         state.action_history.append(action.action_type)
         last_action_error: Optional[str] = None
 
+        # ---------------- FIX ACTIONS ----------------
         if action.action_type in {"fix_schema", "fix_transformation", "fill_missing", "drop_column"}:
-            # Keep rollback snapshots for all mutating actions.
             self._snapshots.append((deepcopy(state.dataset), deepcopy(state.schema), deepcopy(state.fixes_applied)))
+
             new_data, new_schema, fix_error = apply_fix(
                 state.dataset, state.schema, action.action_type, action.parameters
             )
+
             if fix_error:
                 last_action_error = fix_error
                 state.logs.append(f"[ERROR] {fix_error}")
@@ -88,58 +91,70 @@ class PipeFixEnv:
 
         elif action.action_type == "inspect_data":
             state.logs.append("[INFO] Data inspected")
+
         elif action.action_type == "inspect_logs":
             state.logs.append("[INFO] Logs inspected")
+
         elif action.action_type == "run_pipeline":
             stage, status, error, run_logs = run_pipeline(state.dataset, state.schema)
             state.current_stage = stage
             state.pipeline_status = status
             state.error_message = error
-            state.logs.extend(run_logs[1:])  # skip duplicated run-start line
+            state.logs.extend(run_logs[1:])
             state.pipeline_runs = True
+
             if status == "success":
                 state.output_correct = self._is_output_correct()
+
         elif action.action_type == "rollback":
             if not self._snapshots:
-                last_action_error = "No previous snapshot to rollback"
+                last_action_error = "No snapshot to rollback"
                 state.logs.append(f"[ERROR] {last_action_error}")
                 state.error_message = last_action_error
             else:
-                old_data, old_schema, old_fixes = self._snapshots.pop()
-                state.dataset = old_data
-                state.schema = old_schema
-                state.fixes_applied = old_fixes
+                data, schema, fixes = self._snapshots.pop()
+                state.dataset = data
+                state.schema = schema
+                state.fixes_applied = fixes
                 state.logs.append("[INFO] Rollback completed")
+
         elif action.action_type == "finish":
             state.done = True
             state.logs.append("[INFO] Agent finished episode")
-        else:
-            last_action_error = "Unknown action_type"
-            state.logs.append("[ERROR] Unknown action_type")
-            state.error_message = "Unknown action_type"
 
+        else:
+            last_action_error = "Unknown action"
+            state.logs.append("[ERROR] Unknown action")
+            state.error_message = last_action_error
+
+        # ---------------- DONE CONDITIONS ----------------
         if state.step_count >= state.max_steps:
             state.done = True
-            state.logs.append("[WARN] Max steps reached")
 
         if state.pipeline_status == "success" and self._is_output_correct():
             state.done = True
             state.current_stage = "done"
 
-        raw_reward, components = self._compute_reward(prev_state, state, action, last_action_error)
-        score = self._score()
-        clipped = max(0.0, min(1.0, raw_reward))
+        # ---------------- REWARD ----------------
+        raw_reward = 0.0
+        if last_action_error:
+            raw_reward -= 0.3
+        elif state.pipeline_status == "success":
+            raw_reward += 0.5
+
         obs = self._to_observation()
-        info = StepInfo(task_name=state.task_name, last_action_error=last_action_error, raw_reward=raw_reward, score=score)
+        score = self._score()
+
         return StepResult(
             observation=obs,
-            reward=Reward(value=clipped, components=components),
+            reward=Reward(value=max(0.0, min(1.0, raw_reward)), components={}),
             done=state.done,
-            info=info,
+            info=StepInfo(task_name=state.task_name, last_action_error=last_action_error, raw_reward=raw_reward, score=score),
         )
 
+    # ---------------- HELPERS ----------------
+
     def _to_observation(self) -> Observation:
-        assert self._state is not None
         s = self._state
         return Observation(
             current_stage=s.current_stage,
@@ -157,93 +172,35 @@ class PipeFixEnv:
         if action.action_type == "fix_schema":
             return f"fix_schema:{action.parameters.get('column')}:{action.parameters.get('target_type')}"
         if action.action_type == "fill_missing":
-            return f"fill_missing:{action.parameters.get('column')}:{action.parameters.get('strategy', 'median')}"
+            return f"fill_missing:{action.parameters.get('column')}:{action.parameters.get('strategy')}"
         if action.action_type == "drop_column":
             if action.parameters.get("mode") == "deduplicate":
                 return "drop_column:deduplicate"
-            return f"drop_column:{action.parameters.get('column')}"
         return action.action_type
-
-    def _has_progressed(self, prev: PipelineState, new: PipelineState) -> bool:
-        order = {"clean": 0, "transform": 1, "validate": 2, "output": 3, "done": 4}
-        return order.get(new.current_stage, 0) >= order.get(prev.current_stage, 0) and (
-            new.pipeline_status == "success" or new.pipeline_status != prev.pipeline_status
-        )
-
-    def _quality_score(self, state: PipelineState) -> float:
-        # Higher quality means fewer hard failures in data+schema.
-        score = 0.0
-        if all(all(v is not None for v in row.values()) for row in state.dataset):
-            score += 0.25
-        if state.schema.get("date") == "date_iso":
-            score += 0.25
-        if state.schema.get("age") == "int" or all(isinstance(r.get("age"), int) for r in state.dataset):
-            score += 0.25
-        if state.schema.get("user_id") == "int" or all(isinstance(r.get("user_id"), int) for r in state.dataset if r.get("user_id") is not None):
-            score += 0.25
-        return score
-
-    def _compute_reward(
-        self,
-        prev_state: PipelineState,
-        new_state: PipelineState,
-        action: Action,
-        last_action_error: Optional[str],
-    ) -> Tuple[float, Dict[str, float]]:
-        reward = 0.0
-        components: Dict[str, float] = {}
-
-        error_resolved = prev_state.error_message is not None and new_state.error_message is None
-        pipeline_progressed = self._has_progressed(prev_state, new_state)
-        quality_delta = self._quality_score(new_state) - self._quality_score(prev_state)
-        repeated_action = (
-            len(new_state.action_history) >= 2
-            and new_state.action_history[-1] == new_state.action_history[-2]
-            and action.action_type not in {"run_pipeline", "finish"}
-        )
-        bad_action = last_action_error is not None
-
-        if error_resolved:
-            reward += 0.3
-            components["error_resolved"] = 0.3
-        if pipeline_progressed:
-            reward += 0.2
-            components["pipeline_progressed"] = 0.2
-        if quality_delta > 0:
-            increment = min(0.2, quality_delta)
-            reward += increment
-            components["data_quality_improved"] = increment
-        if bad_action:
-            reward -= 0.3
-            components["bad_action"] = -0.3
-        if repeated_action:
-            reward -= 0.1
-            components["repeated_action"] = -0.1
-
-        if new_state.done and new_state.pipeline_status == "success" and self._is_output_correct():
-            if new_state.step_count <= new_state.optimal_steps:
-                reward += 0.2
-                components["efficiency_bonus"] = 0.2
-        if action.action_type in {"inspect_data", "inspect_logs"} and new_state.step_count > 2:
-            reward -= 0.05
-            components["unnecessary_action_penalty"] = -0.05
-
-        return reward, components
 
     def _is_output_correct(self) -> bool:
         assert self._state is not None
-        final_data = TASKS[self._task_name]["final_data"]
-        required = TASKS[self._task_name]["required_fix_order"]
-        prefix = self._state.fixes_applied[: len(required)]
-        return self._state.dataset == final_data and prefix == required
+        state = self._state
+
+        if state.pipeline_status != "success":
+            return False
+
+        if any(any(v is None for v in row.values()) for row in state.dataset):
+            return False
+
+        for row in state.dataset:
+            if not isinstance(row.get("user_id"), int):
+                return False
+            if not isinstance(row.get("age"), int):
+                return False
+            if row.get("age", 0) < 0:
+                return False
+
+        return True
 
     def _score(self) -> float:
         assert self._state is not None
         return grade(self._state, TASKS[self._task_name]["final_data"])
-
-    @property
-    def task_name(self) -> str:
-        return self._task_name
 
     @staticmethod
     def available_tasks() -> List[str]:

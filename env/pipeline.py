@@ -124,43 +124,38 @@ def apply_fix(
     return data, new_schema, error
 
 
-def run_pipeline(dataset: List[Dict[str, Any]], schema: Dict[str, str]) -> Tuple[str, str, Optional[str], List[str]]:
-    logs = ["[INFO] Pipeline run started"]
+def run_pipeline(dataset, schema):
+    logs = ["[INFO] Pipeline execution started"]
 
-    # Clean stage checks
+    # CLEAN
     for row in dataset:
         if any(v is None for v in row.values()):
-            msg = "ValueError: missing required values"
-            logs.append(f"[ERROR] Clean failed: {msg}")
-            return "clean", "failed", msg, logs
-    logs.append("[INFO] Cleaning completed")
+            logs.append("[WARN] Missing values detected in dataset")
+            return "clean", "failed", "incomplete data", logs
 
-    # Transform stage checks
+    logs.append("[INFO] Cleaning stage passed")
+
+    # TRANSFORM
     if schema.get("date") != "date_iso":
-        msg = "ValueError: invalid date format"
-        logs.append(f"[ERROR] Transform failed: {msg}")
-        return "transform", "failed", msg, logs
-    for row in dataset:
-        if not _is_iso_date(row.get("date")):
-            msg = "ValueError: invalid date format"
-            logs.append(f"[ERROR] Transform failed: {msg}")
-            return "transform", "failed", msg, logs
-    logs.append("[INFO] Transformation completed")
+        logs.append("[WARN] Date format inconsistent")
+        return "transform", "failed", "date format issue", logs
 
-    # Validation stage checks
+    logs.append("[INFO] Transform stage passed")
+
+    # VALIDATE
+    for row in dataset:
+        if isinstance(row.get("age"), int) and row["age"] < 0:
+            logs.append("[ERROR] Invalid numeric range detected")
+            return "validate", "failed", "invalid age", logs
+
     for col, typ in schema.items():
         if typ == "int":
             for row in dataset:
-                val = row.get(col)
-                if not isinstance(val, int):
-                    msg = f"TypeError: expected int but got {type(val).__name__}"
-                    logs.append(f"[ERROR] Validation failed: {msg}")
-                    return "validate", "failed", msg, logs
-                if col == "age" and val < 0:
-                    msg = "ValidationError: negative age"
-                    logs.append(f"[ERROR] Validation failed: {msg}")
-                    return "validate", "failed", msg, logs
-    logs.append("[INFO] Validation completed")
+                if not isinstance(row.get(col), int):
+                    logs.append("[ERROR] Type inconsistency detected")
+                    return "validate", "failed", "type mismatch", logs
 
-    logs.append("[INFO] Output generated")
+    logs.append("[INFO] Validation stage passed")
+
+    logs.append("[INFO] Output successfully generated")
     return "output", "success", None, logs
