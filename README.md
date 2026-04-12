@@ -1,5 +1,4 @@
 ---
-
 license: mit
 title: PipeFix Environment
 emoji: 🐳
@@ -8,14 +7,11 @@ colorTo: indigo
 sdk: docker
 app_port: 7860
 tags:
-
-* openenv
-* fastapi
-* docker
-* reinforcement-learning
-
+  - openenv
+  - fastapi
+  - docker
+  - reinforcement-learning
 ---
-
 # 🛠️ PipeFix — Real-World Data Pipeline Debugging Environment (OpenEnv)
 
 PipeFix is a **realistic reinforcement learning environment** where an agent must debug and repair broken data pipelines under ambiguity, incomplete information, and step constraints.
