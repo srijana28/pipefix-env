@@ -11,11 +11,12 @@ from env import Action, PipeFixEnv
 
 
 # =========================
-# CONFIG
+# CONFIG (FIXED)
 # =========================
-API_BASE_URL = os.getenv("API_BASE_URL") or "https://router.huggingface.co/v1"
-API_KEY = os.getenv("HF_TOKEN") or os.getenv("OPENAI_API_KEY")
-MODEL_NAME = os.getenv("MODEL_NAME") or "Qwen/Qwen2.5-72B-Instruct"
+API_BASE_URL = os.environ.get("API_BASE_URL")
+API_KEY = os.environ.get("API_KEY")
+
+MODEL_NAME = os.getenv("MODEL_NAME") or "gpt-4.1-mini"
 
 TASK_ORDER = ["easy_single_failure", "medium_multi_issue", "hard_cascading_failures"]
 TASK_SEEDS = [42, 43, 44]
@@ -83,77 +84,63 @@ def normalize_action(raw: Dict[str, Any]) -> Dict[str, Any]:
 
 
 # =========================
-# LLM ACTION
+# ✅ LLM ACTION (FIXED)
 # =========================
 def get_llm_action(client, task, obs, step, recent_actions):
 
-    # EASY TASK
-    if task == "easy_single_failure":
-        if step == 1:
-            return {
-                "action_type": "fix_transformation",
-                "parameters": {"mode": "date_to_iso"}
-            }
-        elif step == 2:
-            return {"action_type": "run_pipeline", "parameters": {}}
-        else:
-            return {"action_type": "finish", "parameters": {}}
+    prompt = f"""
+You are an AI agent fixing a broken data pipeline.
 
-    # MEDIUM TASK
-    if task == "medium_multi_issue":
-        if step == 1:
-            return {
-                "action_type": "fill_missing",
-                "parameters": {"column": "age", "strategy": "median"}
-            }
-        elif step == 2:
-            return {
-                "action_type": "drop_column",
-                "parameters": {"mode": "deduplicate"}
-            }
-        elif step == 3:
-            return {
-                "action_type": "fix_schema",
-                "parameters": {"column": "age", "target_type": "int"}
-            }
-        elif step == 4:
-            return {"action_type": "run_pipeline", "parameters": {}}
-        else:
-            return {"action_type": "finish", "parameters": {}}
+Task: {task}
+Step: {step}
 
-    # HARD TASK
-    if task == "hard_cascading_failures":
-        if step == 1:
-            return {
-                "action_type": "fill_missing",
-                "parameters": {"column": "user_id", "strategy": "forward_fill"}
-            }
-        elif step == 2:
-            return {
-                "action_type": "fix_transformation",
-                "parameters": {"mode": "date_to_iso"}
-            }
-        elif step == 3:
-            return {
-                "action_type": "fix_schema",
-                "parameters": {"column": "user_id", "target_type": "int"}
-            }
-        elif step == 4:
-            return {
-                "action_type": "fix_schema",
-                "parameters": {"column": "age", "target_type": "int"}
-            }
-        elif step == 5:
-            return {
-                "action_type": "fix_transformation",
-                "parameters": {"mode": "non_negative_age"}
-            }
-        elif step == 6:
-            return {"action_type": "run_pipeline", "parameters": {}}
-        else:
-            return {"action_type": "finish", "parameters": {}}
+Current Observation:
+{json.dumps(obs)}
 
-    return {"action_type": "inspect_logs", "parameters": {}}
+Recent Actions:
+{recent_actions}
+
+Choose the BEST next action.
+
+Allowed actions:
+{ALLOWED_ACTIONS}
+
+Respond ONLY in JSON format:
+{{
+    "action_type": "...",
+    "parameters": {{}}
+}}
+"""
+
+    try:
+        response = client.chat.completions.create(
+            model=MODEL_NAME,
+            messages=[
+                {"role": "system", "content": "You are a pipeline debugging assistant."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=TEMPERATURE,
+            max_tokens=MAX_TOKENS,
+        )
+
+        text = response.choices[0].message.content
+        parsed = extract_json(text)
+        action = normalize_action(parsed)
+
+        if not action:
+            return {
+                "action_type": "inspect_logs",
+                "parameters": {}
+            }
+
+        return action
+
+    except Exception as e:
+        print("LLM ERROR:", str(e))
+        return {
+            "action_type": "inspect_logs",
+            "parameters": {}
+        }
 
 
 # =========================
@@ -163,7 +150,6 @@ def run_episode(task: str, seed: int, client: OpenAI):
 
     env = PipeFixEnv(task_name=task)
 
-    # RESET
     try:
         obs_obj = env.reset(seed=seed)
     except TypeError:
@@ -185,7 +171,6 @@ def run_episode(task: str, seed: int, client: OpenAI):
             client, task, observation, step, recent_actions
         )
 
-        # fallback action
         if not action_dict:
             action_dict = {
                 "action_type": "inspect_logs",
@@ -215,7 +200,6 @@ def run_episode(task: str, seed: int, client: OpenAI):
             success = final_score >= SUCCESS_THRESHOLD
             break
 
-    # ensure END always prints
     rewards_str = ",".join(f"{r:.2f}" for r in rewards)
 
     print(
@@ -231,8 +215,8 @@ def run_episode(task: str, seed: int, client: OpenAI):
 # =========================
 def main():
 
-    if not API_KEY:
-        raise RuntimeError("Missing API key")
+    if not API_KEY or not API_BASE_URL:
+        raise RuntimeError("Missing API_KEY or API_BASE_URL")
 
     client = OpenAI(
         api_key=API_KEY,
